@@ -1,112 +1,172 @@
 import express from "express";
-// import exampleController from "../controllers/example.controller.js";
 import { pool } from "../database.js";
-import generarToken from "../utils/generarToken.js"; // si lo tienes en otro archivo
+import generarToken from "../utils/generarToken.js";
 
 const router = express.Router();
 
+/* =====================================================
+   STATUS API
+===================================================== */
+
 router.get("/", (req, res) => {
-  console.log("holaaaaa");
   res.json({ mensaje: "API Proyecto Título funcionando correctamente 🚀" });
 });
 
-// router.get("/example", exampleController.example);
+/* =====================================================
+   LOGIN
+===================================================== */
 
 router.post("/login", async (req, res) => {
   const { rut, password_sha256 } = req.body;
 
-  // 1. Buscar funcionario
-  const funcionarioQuery = await pool.query(
-    `
-    SELECT id_funcionario, activo, nombre_funcionario, apellido_paterno, apellido_materno
-    FROM funcionario
-    WHERE rut_funcionario = $1
-  `,
-    [rut]
-  );
+  try {
+    const funcionarioQuery = await pool.query(
+      `
+      SELECT id_funcionario, activo, nombre_funcionario, apellido_paterno, apellido_materno
+      FROM funcionario
+      WHERE rut_funcionario = $1
+      `,
+      [rut]
+    );
+
+    if (funcionarioQuery.rowCount === 0) {
+      return res.status(400).json({ ok: false, respuesta: "Usuario no existe" });
+    }
+
+    const funcionario = funcionarioQuery.rows[0];
+    if (!funcionario.activo) {
+      return res.status(403).json({ ok: false, respuesta: "Usuario inactivo" });
+    }
+
+    const usuarioQuery = await pool.query(
+      `
+      SELECT sistema.clave, sistema.activo, perfil.id_perfil
+      FROM usuario_sistema sistema
+      LEFT JOIN usuario_perfil perfil 
+        ON perfil.id_usu_sistema = sistema.id_usu_sistema
+      WHERE sistema.id_funcionario = $1
+      `,
+      [funcionario.id_funcionario]
+    );
+
+    if (usuarioQuery.rowCount === 0) {
+      return res.status(400).json({ ok: false, respuesta: "Usuario no habilitado" });
+    }
+
+    const usuario = usuarioQuery.rows[0];
+
+    if (!usuario.activo) {
+      return res.status(403).json({ ok: false, respuesta: "Usuario inactivo" });
+    }
+
+    if (usuario.clave !== password_sha256) {
+      return res.status(401).json({ ok: false, respuesta: "Contraseña incorrecta" });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      respuesta: "Login OK",
+      token: generarToken(funcionario.id_funcionario),
+      personal: {
+        nombre: funcionario.nombre_funcionario,
+        apellido_paterno: funcionario.apellido_paterno,
+        apellido_materno: funcionario.apellido_materno,
+        id_perfil: usuario.id_perfil,
+      },
+    });
+
+  } catch (error) {
+    console.error("Error en login:", error);
+    res.status(500).json({ ok: false, respuesta: "Error interno" });
+  }
+});
+
+/* =====================================================
+   ENDPOINTS PARA CONSUMIR LAS VISTAS
+===================================================== */
+
+/* 1. OBTENER PACIENTE POR IDENTIFICADOR */
+router.get("/paciente/:identificador", async (req, res) => {
+  const { identificador } = req.params;
+  const query = `SELECT * FROM vw_pacientes_guardados WHERE identificador = $1`;
+  const result = await pool.query(query, [identificador]);
+  res.json(result.rows[0] ?? {});
+});
+
+/* 2. LISTA PACIENTES TOTAL */
+router.get("/pacientes/total", async (req, res) => {
+  const result = await pool.query("SELECT * FROM vw_lista_paciente_total");
+  res.json(result.rows);
+});
+
+/* 3. PACIENTES GUARDADOS */
+router.get("/pacientes/guardados", async (req, res) => {
+  const result = await pool.query("SELECT * FROM vw_pacientes_guardados");
+  res.json(result.rows);
+});
+
+/* 4. ANTERIORES ATENCIONES (POR IDENTIFICADOR) */
+router.get("/anteriores-atenciones/:identificador", async (req, res) => {
+  const { identificador } = req.params;
+  const query = `
+      SELECT * 
+      FROM vw_anteriores_atenciones 
+      WHERE identificador_paciente = $1
+      ORDER BY fecha DESC
+  `;
+  const result = await pool.query(query, [identificador]);
+  res.json(result.rows);
+});
+
+/* 5. RESULTADOS TOTALES (POR IDENTIFICADOR) */
+router.get("/resultados/:identificador", async (req, res) => {
+  const { identificador } = req.params;
+  const query = `
+      SELECT * 
+      FROM vw_resultados_totales
+      WHERE identificador_paciente = $1
+  `;
+  const result = await pool.query(query, [identificador]);
+  res.json(result.rows);
+});
+
+/* 6. PRÓXIMAS ATENCIONES (POR IDENTIFICADOR) */
+router.get("/proximas-atenciones/:identificador", async (req, res) => {
+  const { identificador } = req.params;
+  const query = `
+      SELECT * 
+      FROM vw_proximas_atenciones 
+      WHERE identificador_paciente = $1
+      ORDER BY fecha ASC
+  `;
+  const result = await pool.query(query, [identificador]);
   
-  if (funcionarioQuery.rowCount === 0) {
-    var respuesta = {
-        ok: false,
-        error: "",
-        respuesta: "Usuario no existe" 
-    };
- 
-    res.status(400).send(respuesta)
-  }
+  
+  res.json(result.rows);
+});
 
-  const funcionario = funcionarioQuery.rows[0];
+/* 7. SOLICITUDES DE LABORATORIO (POR IDENTIFICADOR) */
+router.get("/solicitudes-laboratorio/:identificador", async (req, res) => {
+  const { identificador } = req.params;
+  const query = `
+      SELECT *
+      FROM vw_solicitudes_laboratorio
+      WHERE identificador_paciente = $1
+  `;
+  const result = await pool.query(query, [identificador]);
+  res.json(result.rows);
+});
 
-  if (!funcionario.activo) {
-    var respuesta = {
-        ok: false,
-        error: "",
-        respuesta: "Usuario inactivo" 
-    };
- 
-    res.status(403).send(respuesta)
-  }
+/* 8. LISTA SOLICITUDES (OIRS) */
+router.get("/solicitudes/total", async (req, res) => {
+  const result = await pool.query("SELECT * FROM vw_lista_solicitud_total");
+  res.json(result.rows);
+});
 
-  // 2. Buscar usuario_sistema
-  const usuarioQuery = await pool.query(
-    `
-    SELECT sistema.clave, sistema.activo, perfil.id_perfil
-    FROM usuario_sistema sistema
-    LEFT JOIN usuario_perfil perfil on perfil.id_usu_sistema = sistema.id_usu_sistema
-    WHERE sistema.id_funcionario = $1
-  `,
-    [funcionario.id_funcionario]
-  );
-
-  if (usuarioQuery.rowCount === 0) {
-    var respuesta = {
-        ok: false,
-        error: "",
-        respuesta: "Usuario no habilitado" 
-    };
- 
-    res.status(400).send(respuesta)
-  }
-
-  const usuario = usuarioQuery.rows[0];
-
-  if (!usuario.activo) {
-    var respuesta = {
-        ok: false,
-        error: "",
-        respuesta: "Usuario inactivo" 
-    };
- 
-    res.status(403).send(respuesta)
-  }
-
-  // 3. Comparar contraseña SHA256
-  if (usuario.clave !== password_sha256) {
-    var respuesta = {
-        ok: false,
-        error: "",
-        respuesta: "Contraseña incorrecta" 
-    };
- 
-    res.status(401).send(respuesta)
-  }
-
-  // 4. Login OK
-  var respuesta = {
-        ok: true,
-        error: "",
-        respuesta: "Login OK",
-        token: generarToken(funcionario.id_funcionario),
-        personal: {'nombre': funcionario.nombre_funcionario,'apellido_paterno': funcionario.apellido_paterno,'apellido_materno': funcionario.apellido_materno, 'id_perfil': usuario.id_perfil}
-    };
-      
-  res.status(200).send(respuesta)
-
-//   return res.json({
-//     mensaje: "Login OK",
-//     id_funcionario: funcionario.id_funcionario,
-//     // token: generarToken(funcionario.id_funcionario),
-//   });
+/* 9. LISTA RETROALIMENTACIÓN (OIRS) */
+router.get("/retroalimentacion/total", async (req, res) => {
+  const result = await pool.query("SELECT * FROM vw_lista_retroalimentacion_total");
+  res.json(result.rows);
 });
 
 export default router;
